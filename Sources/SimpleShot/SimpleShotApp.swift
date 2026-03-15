@@ -121,6 +121,7 @@ class AppState: ObservableObject {
     @Published var annotationText: String = "Label"
     @Published var strokeWidth: CGFloat = 4
     @Published var nextNumber: Int = 1
+    @Published var selectedAnnotationID: UUID? = nil
 
     func loadFromClipboard() {
         let pb = NSPasteboard.general
@@ -190,9 +191,80 @@ class AppState: ObservableObject {
         }
     }
 
+    func deleteSelectedAnnotation() {
+        guard let id = selectedAnnotationID,
+              let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
+        let ann = annotations.remove(at: idx)
+        if ann.tool == .number { renumberAnnotations() }
+        selectedAnnotationID = nil
+    }
+
+    func moveSelectedAnnotation(deltaNorm: CGSize) {
+        guard let id = selectedAnnotationID,
+              let idx = annotations.firstIndex(where: { $0.id == id }) else { return }
+        annotations[idx].startNorm.x = clamp(annotations[idx].startNorm.x + deltaNorm.width)
+        annotations[idx].startNorm.y = clamp(annotations[idx].startNorm.y + deltaNorm.height)
+        annotations[idx].endNorm.x = clamp(annotations[idx].endNorm.x + deltaNorm.width)
+        annotations[idx].endNorm.y = clamp(annotations[idx].endNorm.y + deltaNorm.height)
+    }
+
+    /// Find annotation near a normalized point (returns last/topmost match)
+    func hitTest(normPoint: CGPoint, canvasSize: CGSize) -> UUID? {
+        let threshold: CGFloat = 0.025 // normalized distance threshold
+        for ann in annotations.reversed() {
+            switch ann.tool {
+            case .arrow:
+                if distanceToSegment(point: normPoint, a: ann.startNorm, b: ann.endNorm) < threshold {
+                    return ann.id
+                }
+            case .circle, .rectangle:
+                let rect = CGRect(
+                    x: min(ann.startNorm.x, ann.endNorm.x),
+                    y: min(ann.startNorm.y, ann.endNorm.y),
+                    width: abs(ann.endNorm.x - ann.startNorm.x),
+                    height: abs(ann.endNorm.y - ann.startNorm.y)
+                ).insetBy(dx: -threshold, dy: -threshold)
+                if rect.contains(normPoint) {
+                    return ann.id
+                }
+            case .number:
+                let dist = hypot(normPoint.x - ann.startNorm.x, normPoint.y - ann.startNorm.y)
+                if dist < threshold * 2 { return ann.id }
+            case .text:
+                let dx = normPoint.x - ann.startNorm.x
+                let dy = ann.startNorm.y - normPoint.y
+                if dx >= -threshold && dx < 0.1 && dy >= -threshold && dy < 0.04 {
+                    return ann.id
+                }
+            case .pointer:
+                break
+            }
+        }
+        return nil
+    }
+
+    private func distanceToSegment(point: CGPoint, a: CGPoint, b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lenSq = dx * dx + dy * dy
+        guard lenSq > 0 else { return hypot(point.x - a.x, point.y - a.y) }
+        let t = max(0, min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lenSq))
+        let proj = CGPoint(x: a.x + t * dx, y: a.y + t * dy)
+        return hypot(point.x - proj.x, point.y - proj.y)
+    }
+
+    private func renumberAnnotations() {
+        var n = 1
+        for i in annotations.indices where annotations[i].tool == .number {
+            annotations[i].number = n
+            n += 1
+        }
+        nextNumber = n
+    }
+
     func undoAnnotation() {
         guard let last = annotations.popLast() else { return }
         if last.tool == .number { nextNumber = max(1, nextNumber - 1) }
+        selectedAnnotationID = nil
     }
 
     func clearAnnotations() {
@@ -432,6 +504,7 @@ class AppState: ObservableObject {
 struct PreviewCanvas: View {
     @ObservedObject var state: AppState
     @State private var inProgress: Annotation?
+    @State private var dragStart: CGPoint? = nil
 
     private var aspectRatio: CGFloat {
         let size = state.outputSize
@@ -471,6 +544,7 @@ struct PreviewCanvas: View {
                         let end = CGPoint(x: ann.endNorm.x * size.width, y: ann.endNorm.y * size.height)
                         let color = Color(nsColor: ann.color)
                         let sw = ann.strokeWidth * (size.width / state.outputSize.width)
+                        let isSelected = ann.id == state.selectedAnnotationID
 
                         switch ann.tool {
                         case .arrow:
@@ -494,17 +568,62 @@ struct PreviewCanvas: View {
                         case .pointer:
                             break
                         }
+
+                        // Selection highlight
+                        if isSelected {
+                            let selRect: CGRect
+                            switch ann.tool {
+                            case .arrow:
+                                selRect = rectFrom(start, end).insetBy(dx: -6, dy: -6)
+                            case .circle, .rectangle:
+                                selRect = rectFrom(start, end).insetBy(dx: -4, dy: -4)
+                            case .number:
+                                let r = size.width * 0.016 + 4
+                                selRect = CGRect(x: start.x - r, y: start.y - r, width: r * 2, height: r * 2)
+                            case .text:
+                                let fontSize = size.width * 0.022
+                                selRect = CGRect(x: start.x - 2, y: start.y - fontSize - 2, width: fontSize * CGFloat(ann.text.count) * 0.65, height: fontSize + 4)
+                            case .pointer:
+                                selRect = .zero
+                            }
+                            if selRect != .zero {
+                                let dash = StrokeStyle(lineWidth: 1.5, dash: [4, 3])
+                                gfx.stroke(Path(selRect), with: .color(.white.opacity(0.8)), style: dash)
+                            }
+                        }
                     }
                 }
                 .allowsHitTesting(false)
 
                 // Gesture layer
-                if state.currentTool != .pointer {
-                    Color.clear
-                        .contentShape(Rectangle())
-                        .gesture(
-                            DragGesture(minimumDistance: 0)
-                                .onChanged { value in
+                Color.clear
+                    .contentShape(Rectangle())
+                    .gesture(
+                        DragGesture(minimumDistance: 0)
+                            .onChanged { value in
+                                if state.currentTool == .pointer {
+                                    // Pointer mode: select & drag
+                                    let clickNorm = CGPoint(
+                                        x: clamp(value.startLocation.x / geo.size.width),
+                                        y: clamp(value.startLocation.y / geo.size.height)
+                                    )
+                                    if dragStart == nil {
+                                        // First event: hit test to select
+                                        state.selectedAnnotationID = state.hitTest(normPoint: clickNorm, canvasSize: geo.size)
+                                        dragStart = clickNorm
+                                    }
+                                    if state.selectedAnnotationID != nil {
+                                        let curNorm = CGPoint(
+                                            x: clamp(value.location.x / geo.size.width),
+                                            y: clamp(value.location.y / geo.size.height)
+                                        )
+                                        let prev = dragStart!
+                                        let delta = CGSize(width: curNorm.x - prev.x, height: curNorm.y - prev.y)
+                                        state.moveSelectedAnnotation(deltaNorm: delta)
+                                        dragStart = curNorm
+                                    }
+                                } else {
+                                    // Drawing mode
                                     let startN = CGPoint(
                                         x: clamp(value.startLocation.x / geo.size.width),
                                         y: clamp(value.startLocation.y / geo.size.height)
@@ -529,7 +648,11 @@ struct PreviewCanvas: View {
                                     }
                                     inProgress = ann
                                 }
-                                .onEnded { value in
+                            }
+                            .onEnded { value in
+                                if state.currentTool == .pointer {
+                                    dragStart = nil
+                                } else {
                                     guard var ann = inProgress else { return }
                                     let endN = CGPoint(
                                         x: clamp(value.location.x / geo.size.width),
@@ -542,15 +665,15 @@ struct PreviewCanvas: View {
                                     if ann.tool == .number { state.nextNumber += 1 }
                                     inProgress = nil
                                 }
-                        )
-                        .onHover { inside in
-                            if inside && state.currentTool != .pointer {
-                                NSCursor.crosshair.push()
-                            } else {
-                                NSCursor.pop()
                             }
+                    )
+                    .onHover { inside in
+                        if inside && state.currentTool != .pointer {
+                            NSCursor.crosshair.push()
+                        } else {
+                            NSCursor.pop()
                         }
-                }
+                    }
             }
         }
         .aspectRatio(aspectRatio, contentMode: .fit)
@@ -684,7 +807,7 @@ struct ContentView: View {
 
                         HStack(spacing: 4) {
                             ForEach(AnnotationTool.allCases) { tool in
-                                Button(action: { state.currentTool = tool }) {
+                                Button(action: { state.currentTool = tool; state.selectedAnnotationID = nil }) {
                                     Image(systemName: tool.icon)
                                         .font(.system(size: 14))
                                         .frame(width: 28, height: 28)
@@ -699,7 +822,13 @@ struct ContentView: View {
                         // Color picker
                         HStack(spacing: 4) {
                             ForEach(annotationColorOptions, id: \.0) { name, color in
-                                Button(action: { state.annotationColor = color }) {
+                                Button(action: {
+                                    state.annotationColor = color
+                                    if let id = state.selectedAnnotationID,
+                                       let idx = state.annotations.firstIndex(where: { $0.id == id }) {
+                                        state.annotations[idx].color = color
+                                    }
+                                }) {
                                     Circle()
                                         .fill(Color(nsColor: color))
                                         .frame(width: 20, height: 20)
@@ -720,17 +849,46 @@ struct ContentView: View {
                             Text("Stroke")
                                 .font(.system(size: 11))
                                 .foregroundStyle(.tertiary)
-                            Slider(value: $state.strokeWidth, in: 2...12, step: 1)
+                            Slider(value: Binding(
+                                get: {
+                                    if let id = state.selectedAnnotationID,
+                                       let ann = state.annotations.first(where: { $0.id == id }) {
+                                        return ann.strokeWidth
+                                    }
+                                    return state.strokeWidth
+                                },
+                                set: { newVal in
+                                    state.strokeWidth = newVal
+                                    if let id = state.selectedAnnotationID,
+                                       let idx = state.annotations.firstIndex(where: { $0.id == id }) {
+                                        state.annotations[idx].strokeWidth = newVal
+                                    }
+                                }
+                            ), in: 2...12, step: 1)
                             Text("\(Int(state.strokeWidth))")
                                 .font(.system(size: 10, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
 
-                        // Text input (for text tool)
+                        // Text input (for text tool or selected text annotation)
                         if state.currentTool == .text {
                             TextField("Label text", text: $state.annotationText)
                                 .textFieldStyle(.roundedBorder)
                                 .font(.system(size: 12))
+                        }
+                        if let id = state.selectedAnnotationID,
+                           let idx = state.annotations.firstIndex(where: { $0.id == id }),
+                           state.annotations[idx].tool == .text {
+                            TextField("Edit text", text: Binding(
+                                get: { state.annotations.first(where: { $0.id == id })?.text ?? "" },
+                                set: { newVal in
+                                    if let i = state.annotations.firstIndex(where: { $0.id == id }) {
+                                        state.annotations[i].text = newVal
+                                    }
+                                }
+                            ))
+                            .textFieldStyle(.roundedBorder)
+                            .font(.system(size: 12))
                         }
 
                         // Undo / Clear
@@ -951,6 +1109,9 @@ struct ContentView: View {
         .frame(minWidth: 700, minHeight: 480)
         .onAppear {
             state.loadFromClipboard()
+        }
+        .onDeleteCommand {
+            state.deleteSelectedAnnotation()
         }
     }
 }
