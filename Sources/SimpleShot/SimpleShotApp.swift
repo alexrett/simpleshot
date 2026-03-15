@@ -78,6 +78,31 @@ let annotationColorOptions: [(String, NSColor)] = [
     ("Black", .black),
 ]
 
+// MARK: - Aspect Ratio Presets
+
+enum AspectRatioOption: String, CaseIterable, Identifiable {
+    case free = "Free"
+    case r16x9 = "16:9"
+    case r4x3 = "4:3"
+    case r3x2 = "3:2"
+    case r1x1 = "1:1"
+    case r9x16 = "9:16"
+
+    var id: String { rawValue }
+
+    /// nil means free (follow image)
+    var ratio: CGFloat? {
+        switch self {
+        case .free: nil
+        case .r16x9: 16.0 / 9.0
+        case .r4x3: 4.0 / 3.0
+        case .r3x2: 3.0 / 2.0
+        case .r1x1: 1.0
+        case .r9x16: 9.0 / 16.0
+        }
+    }
+}
+
 // MARK: - App State
 
 class AppState: ObservableObject {
@@ -86,6 +111,8 @@ class AppState: ObservableObject {
     @Published var padding: CGFloat = 64
     @Published var cornerRadius: CGFloat = 0
     @Published var shadow: Bool = true
+    @Published var contentBackground: NSColor? = nil // nil = transparent
+    @Published var aspectRatioOption: AspectRatioOption = .free
 
     // Annotations
     @Published var annotations: [Annotation] = []
@@ -97,29 +124,70 @@ class AppState: ObservableObject {
 
     func loadFromClipboard() {
         let pb = NSPasteboard.general
+
+        // Check for file URLs first (e.g. files copied in Finder with ⌘C)
+        if let urls = pb.readObjects(forClasses: [NSURL.self], options: [
+            .urlReadingContentsConformToTypes: NSImage.imageTypes
+        ]) as? [URL], let url = urls.first {
+            if loadFromFile(url: url) { return }
+        }
+
         if let data = pb.data(forType: .png), let img = NSImage(data: data) {
-            clipboardImage = img
-            annotations.removeAll()
-            nextNumber = 1
+            setImage(img)
             return
         }
         if let data = pb.data(forType: .tiff), let img = NSImage(data: data) {
-            clipboardImage = img
-            annotations.removeAll()
-            nextNumber = 1
+            setImage(img)
             return
         }
         if let objects = pb.readObjects(forClasses: [NSImage.self], options: nil),
            let img = objects.first as? NSImage {
-            clipboardImage = img
-            annotations.removeAll()
-            nextNumber = 1
+            setImage(img)
         }
+    }
+
+    @discardableResult
+    func loadFromFile(url: URL) -> Bool {
+        guard let img = NSImage(contentsOf: url) else { return false }
+        // For PDFs and multi-page formats, NSImage loads the first page
+        setImage(img)
+        return true
+    }
+
+    func openFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [
+            .image, .png, .jpeg, .tiff, .gif, .bmp, .heic, .webP, .pdf, .svg, .icns
+        ]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        if panel.runModal() == .OK, let url = panel.url {
+            loadFromFile(url: url)
+        }
+    }
+
+    func setImage(_ img: NSImage) {
+        clipboardImage = img
+        annotations.removeAll()
+        nextNumber = 1
     }
 
     var outputSize: CGSize {
         guard let img = clipboardImage else { return .zero }
-        return CGSize(width: img.size.width + padding * 2, height: img.size.height + padding * 2)
+        let baseW = img.size.width + padding * 2
+        let baseH = img.size.height + padding * 2
+        guard let targetRatio = aspectRatioOption.ratio else {
+            return CGSize(width: baseW, height: baseH)
+        }
+        // Expand canvas to match target aspect ratio while keeping image fully visible
+        let currentRatio = baseW / baseH
+        if currentRatio > targetRatio {
+            // Too wide — increase height
+            return CGSize(width: baseW, height: baseW / targetRatio)
+        } else {
+            // Too tall — increase width
+            return CGSize(width: baseH * targetRatio, height: baseH)
+        }
     }
 
     func undoAnnotation() {
@@ -138,8 +206,9 @@ class AppState: ObservableObject {
 
         let imgW = CGFloat(cgScreenshot.width)
         let imgH = CGFloat(cgScreenshot.height)
-        let totalW = Int(imgW + padding * 2)
-        let totalH = Int(imgH + padding * 2)
+        let size = outputSize
+        let totalW = Int(size.width)
+        let totalH = Int(size.height)
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
@@ -161,14 +230,32 @@ class AppState: ObservableObject {
             ctx.drawLinearGradient(gradient, start: start, end: end, options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
         }
 
-        // 2. Draw shadow
-        let imgRect = CGRect(x: padding, y: padding, width: imgW, height: imgH)
+        // 2. Draw shadow — center the image in the canvas
+        let imgRect = CGRect(
+            x: (CGFloat(totalW) - imgW) / 2,
+            y: (CGFloat(totalH) - imgH) / 2,
+            width: imgW,
+            height: imgH
+        )
         if shadow {
             ctx.saveGState()
             ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 30, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.45))
         }
 
-        // 3. Draw screenshot with optional corner radius
+        // 3. Draw content background fill (useful for PDFs/transparent images)
+        if let bg = contentBackground {
+            ctx.saveGState()
+            if cornerRadius > 0 {
+                let clipPath = CGPath(roundedRect: imgRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+                ctx.addPath(clipPath)
+                ctx.clip()
+            }
+            ctx.setFillColor(bg.cgColor)
+            ctx.fill(imgRect)
+            ctx.restoreGState()
+        }
+
+        // 4. Draw screenshot with optional corner radius
         if cornerRadius > 0 {
             ctx.saveGState()
             let clipPath = CGPath(roundedRect: imgRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
@@ -347,10 +434,9 @@ struct PreviewCanvas: View {
     @State private var inProgress: Annotation?
 
     private var aspectRatio: CGFloat {
-        guard let img = state.clipboardImage else { return 16.0 / 9.0 }
-        let w = img.size.width + state.padding * 2
-        let h = img.size.height + state.padding * 2
-        return w / h
+        let size = state.outputSize
+        guard size.height > 0 else { return 16.0 / 9.0 }
+        return size.width / size.height
     }
 
     var body: some View {
@@ -368,6 +454,9 @@ struct PreviewCanvas: View {
                 Image(nsImage: img)
                     .resizable()
                     .aspectRatio(img.size.width / img.size.height, contentMode: .fit)
+                    .background(
+                        state.contentBackground.map { Color(nsColor: $0) } ?? Color.clear
+                    )
                     .clipShape(RoundedRectangle(cornerRadius: state.cornerRadius))
                     .shadow(color: state.shadow ? .black.opacity(0.4) : .clear, radius: 16, x: 0, y: 8)
                     .padding(previewPadding)
@@ -517,10 +606,10 @@ struct ContentView: View {
                         Image(systemName: "photo.on.rectangle.angled")
                             .font(.system(size: 44))
                             .foregroundStyle(.tertiary)
-                        Text("Take a screenshot (\u{2318}\u{21E7}4 + Space)")
+                        Text("Drop an image here")
                             .foregroundStyle(.secondary)
                             .font(.system(size: 13))
-                        Text("then press Paste below")
+                        Text("or paste from clipboard / open a file")
                             .foregroundStyle(.tertiary)
                             .font(.system(size: 12))
                     }
@@ -528,13 +617,46 @@ struct ContentView: View {
                 }
             }
             .background(Color(nsColor: .windowBackgroundColor).opacity(0.3))
+            .onDrop(of: [.image, .fileURL], isTargeted: nil) { providers in
+                // Handle file URL drops
+                if let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) {
+                    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { data, _ in
+                        guard let data = data as? Data,
+                              let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                        DispatchQueue.main.async {
+                            state.loadFromFile(url: url)
+                        }
+                    }
+                    return true
+                }
+                // Handle direct image data drops
+                if let provider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.image.identifier) }) {
+                    provider.loadItem(forTypeIdentifier: UTType.image.identifier, options: nil) { data, _ in
+                        guard let data = data as? Data, let img = NSImage(data: data) else { return }
+                        DispatchQueue.main.async {
+                            state.setImage(img)
+                        }
+                    }
+                    return true
+                }
+                return false
+            }
 
             Divider()
 
             // Controls sidebar
+            VStack(spacing: 0) {
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Paste
+                    // Open / Paste
+                    Button(action: { state.openFile() }) {
+                        Label("Open File", systemImage: "folder")
+                            .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.bordered)
+                    .keyboardShortcut("o")
+                    .controlSize(.large)
+
                     Button(action: { state.loadFromClipboard() }) {
                         Label("Paste from Clipboard", systemImage: "clipboard")
                             .frame(maxWidth: .infinity)
@@ -678,6 +800,27 @@ struct ContentView: View {
                         }
                     }
 
+                    // Aspect ratio
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Aspect Ratio")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 4) {
+                            ForEach(AspectRatioOption.allCases) { option in
+                                Button(action: { state.aspectRatioOption = option }) {
+                                    Text(option.rawValue)
+                                        .font(.system(size: 10, weight: .medium))
+                                        .frame(maxWidth: .infinity)
+                                        .padding(.vertical, 5)
+                                        .background(state.aspectRatioOption == option ? Color.accentColor.opacity(0.2) : Color.clear)
+                                        .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+
                     // Corner radius
                     VStack(alignment: .leading, spacing: 6) {
                         HStack {
@@ -692,35 +835,107 @@ struct ContentView: View {
                         Slider(value: $state.cornerRadius, in: 0...32, step: 2)
                     }
 
+                    // Content background fill
+                    VStack(alignment: .leading, spacing: 8) {
+                        Text("Content Fill")
+                            .font(.system(size: 12, weight: .medium))
+                            .foregroundStyle(.secondary)
+
+                        HStack(spacing: 4) {
+                            // Transparent
+                            Button(action: { state.contentBackground = nil }) {
+                                ZStack {
+                                    // Checkerboard pattern to indicate transparency
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .fill(Color.white)
+                                        .frame(width: 28, height: 28)
+                                    Path { path in
+                                        for row in 0..<4 {
+                                            for col in 0..<4 where (row + col).isMultiple(of: 2) {
+                                                path.addRect(CGRect(x: 4 + col * 5, y: 4 + row * 5, width: 5, height: 5))
+                                            }
+                                        }
+                                    }
+                                    .fill(Color.gray.opacity(0.3))
+                                    .frame(width: 28, height: 28)
+                                    .clipShape(RoundedRectangle(cornerRadius: 6))
+                                }
+                                .overlay(
+                                    RoundedRectangle(cornerRadius: 6)
+                                        .stroke(state.contentBackground == nil ? Color.accentColor : Color.clear, lineWidth: 2)
+                                )
+                            }
+                            .buttonStyle(.plain)
+                            .help("Transparent")
+
+                            // White
+                            Button(action: { state.contentBackground = .white }) {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.white)
+                                    .frame(width: 28, height: 28)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(state.contentBackground == .white ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: state.contentBackground == .white ? 2 : 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .help("White")
+
+                            // Black
+                            Button(action: { state.contentBackground = .black }) {
+                                RoundedRectangle(cornerRadius: 6)
+                                    .fill(Color.black)
+                                    .frame(width: 28, height: 28)
+                                    .overlay(
+                                        RoundedRectangle(cornerRadius: 6)
+                                            .stroke(state.contentBackground == .black ? Color.accentColor : Color.gray.opacity(0.3), lineWidth: state.contentBackground == .black ? 2 : 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .help("Black")
+
+                            // Custom color picker
+                            ColorPicker("", selection: Binding(
+                                get: { Color(nsColor: state.contentBackground ?? .white) },
+                                set: { state.contentBackground = NSColor($0) }
+                            ), supportsOpacity: false)
+                            .labelsHidden()
+                            .help("Custom color")
+                        }
+                    }
+
                     // Shadow toggle
                     Toggle("Drop Shadow", isOn: $state.shadow)
                         .font(.system(size: 12, weight: .medium))
 
-                    Divider()
-
-                    // Actions
-                    VStack(spacing: 8) {
-                        Button(action: { state.copyToClipboard() }) {
-                            Label("Copy to Clipboard", systemImage: "doc.on.doc")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut("c", modifiers: [.command, .shift])
-                        .controlSize(.large)
-                        .disabled(state.clipboardImage == nil)
-
-                        Button(action: { state.saveToDisk() }) {
-                            Label("Save as PNG", systemImage: "square.and.arrow.down")
-                                .frame(maxWidth: .infinity)
-                        }
-                        .buttonStyle(.bordered)
-                        .keyboardShortcut("s")
-                        .controlSize(.large)
-                        .disabled(state.clipboardImage == nil)
-                    }
                 }
                 .padding(16)
             }
+
+            Divider()
+
+            // Actions pinned to bottom
+            VStack(spacing: 8) {
+                Button(action: { state.copyToClipboard() }) {
+                    Label("Copy to Clipboard", systemImage: "doc.on.doc")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("c", modifiers: [.command, .shift])
+                .controlSize(.large)
+                .disabled(state.clipboardImage == nil)
+
+                Button(action: { state.saveToDisk() }) {
+                    Label("Save as PNG", systemImage: "square.and.arrow.down")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("s")
+                .controlSize(.large)
+                .disabled(state.clipboardImage == nil)
+            }
+            .padding(16)
+            } // VStack sidebar
             .frame(width: 240)
         }
         .frame(minWidth: 700, minHeight: 480)
