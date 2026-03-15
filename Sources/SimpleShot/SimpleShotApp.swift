@@ -959,6 +959,8 @@ struct ContentView: View {
 
 @main
 struct SimpleShotApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+
     var body: some Scene {
         WindowGroup {
             ContentView()
@@ -966,5 +968,20 @@ struct SimpleShotApp: App {
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 860, height: 560)
+    }
+}
+
+class AppDelegate: NSObject, NSApplicationDelegate {
+    var monitor: Any?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
+            if event.clickCount == 2,
+               let window = event.window,
+               event.locationInWindow.y >= window.frame.height - 32 {
+                window.zoom(nil)
+            }
+            return event
+        }
     }
 }
