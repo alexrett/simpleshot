@@ -22,6 +22,8 @@ BINARY=".build/apple/Products/Release/${APP_NAME}"
 
 step() { echo ""; echo "── $1"; }
 
+SELF="$(cd "$(dirname "$0")" && pwd)/$(basename "$0")"
+
 case "${1:-release}" in
 
 build)
@@ -30,7 +32,7 @@ build)
     ;;
 
 app)
-    $0 build
+    bash "${SELF}" build
     step "Creating ${APP}"
     rm -rf "${APP}"
     mkdir -p "${APP}/Contents/MacOS" "${APP}/Contents/Resources"
@@ -64,7 +66,7 @@ PLIST
     ;;
 
 sign)
-    $0 app
+    bash "${SELF}" app
     step "Signing ${APP}"
     # Sign any embedded bundles first
     find "${APP}/Contents/Resources" -name "*.bundle" -exec \
@@ -77,7 +79,7 @@ sign)
     ;;
 
 notarize)
-    $0 sign
+    bash "${SELF}" sign
     step "Notarizing"
     ditto -c -k --keepParent "${APP}" "/tmp/${APP_NAME}.zip"
     xcrun notarytool submit "/tmp/${APP_NAME}.zip" \
@@ -88,7 +90,7 @@ notarize)
     ;;
 
 dmg)
-    $0 notarize
+    bash "${SELF}" notarize
     step "Creating ${DMG}"
     rm -f "${DMG}"
     STAGING="$(mktemp -d)"
@@ -100,7 +102,7 @@ dmg)
     ;;
 
 release)
-    $0 dmg
+    bash "${SELF}" dmg
     step "Done"
     echo "Upload ${DMG} to GitHub Releases"
     echo "  gh release create vX.Y.Z ${DMG} --title '${DISPLAY_NAME} vX.Y.Z'"
