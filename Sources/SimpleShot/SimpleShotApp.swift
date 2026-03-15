@@ -45,65 +45,94 @@ class AppState: ObservableObject {
     @Published var clipboardImage: NSImage? = nil
     @Published var selectedPreset: GradientPreset = gradientPresets[0]
     @Published var padding: CGFloat = 64
-    @Published var cornerRadius: CGFloat = 12
+    @Published var cornerRadius: CGFloat = 0
     @Published var shadow: Bool = true
 
     func loadFromClipboard() {
-        guard let pb = NSPasteboard.general.readObjects(forClasses: [NSImage.self], options: nil),
-              let img = pb.first as? NSImage else { return }
-        clipboardImage = img
+        let pb = NSPasteboard.general
+        // Try PNG first — preserves alpha from window screenshots
+        if let data = pb.data(forType: .png), let img = NSImage(data: data) {
+            clipboardImage = img
+            return
+        }
+        if let data = pb.data(forType: .tiff), let img = NSImage(data: data) {
+            clipboardImage = img
+            return
+        }
+        if let objects = pb.readObjects(forClasses: [NSImage.self], options: nil),
+           let img = objects.first as? NSImage {
+            clipboardImage = img
+        }
     }
 
     func renderFinal() -> NSImage? {
-        guard let screenshot = clipboardImage else { return nil }
+        guard let screenshot = clipboardImage,
+              let cgScreenshot = screenshot.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
-        let imgSize = screenshot.size
-        let totalW = imgSize.width + padding * 2
-        let totalH = imgSize.height + padding * 2
+        let imgW = CGFloat(cgScreenshot.width)
+        let imgH = CGFloat(cgScreenshot.height)
+        let totalW = Int(imgW + padding * 2)
+        let totalH = Int(imgH + padding * 2)
 
-        let result = NSImage(size: NSSize(width: totalW, height: totalH))
-        result.lockFocus()
+        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        guard let ctx = CGContext(
+            data: nil,
+            width: totalW,
+            height: totalH,
+            bitsPerComponent: 8,
+            bytesPerRow: 0,
+            space: colorSpace,
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue
+        ) else { return nil }
 
-        guard let ctx = NSGraphicsContext.current?.cgContext else {
-            result.unlockFocus()
-            return nil
+        let fullRect = CGRect(x: 0, y: 0, width: totalW, height: totalH)
+
+        // 1. Draw gradient background
+        let cgColors = selectedPreset.colors.map { NSColor($0).cgColor }
+        if let gradient = CGGradient(colorsSpace: colorSpace, colors: cgColors as CFArray, locations: nil) {
+            let (start, end) = gradientPoints(for: fullRect)
+            ctx.drawLinearGradient(gradient, start: start, end: end, options: [.drawsBeforeStartLocation, .drawsAfterEndLocation])
         }
 
-        // Draw gradient background
-        let rect = CGRect(origin: .zero, size: CGSize(width: totalW, height: totalH))
-        let nsColors = selectedPreset.colors.map { NSColor($0) }
-        if let gradient = NSGradient(colors: nsColors) {
-            gradient.draw(in: rect, angle: gradientAngle())
-        }
-
-        // Draw shadow
+        // 2. Draw shadow
+        let imgRect = CGRect(x: padding, y: padding, width: imgW, height: imgH)
         if shadow {
-            let shadowRect = CGRect(x: padding, y: padding, width: imgSize.width, height: imgSize.height)
             ctx.saveGState()
-            ctx.setShadow(offset: CGSize(width: 0, height: -8), blur: 32, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.4))
-            let shadowPath = CGPath(roundedRect: shadowRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
-            ctx.addPath(shadowPath)
-            ctx.setFillColor(CGColor(red: 0, green: 0, blue: 0, alpha: 1))
-            ctx.fillPath()
+            ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 30, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.45))
+        }
+
+        // 3. Draw screenshot with optional corner radius
+        if cornerRadius > 0 {
+            ctx.saveGState()
+            let clipPath = CGPath(roundedRect: imgRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            ctx.addPath(clipPath)
+            ctx.clip()
+            ctx.draw(cgScreenshot, in: imgRect)
+            ctx.restoreGState()
+        } else {
+            ctx.draw(cgScreenshot, in: imgRect)
+        }
+
+        if shadow {
             ctx.restoreGState()
         }
 
-        // Draw screenshot with rounded corners
-        let imgRect = NSRect(x: padding, y: padding, width: imgSize.width, height: imgSize.height)
-        let clipPath = NSBezierPath(roundedRect: imgRect, xRadius: cornerRadius, yRadius: cornerRadius)
-        clipPath.addClip()
-        screenshot.draw(in: imgRect)
-
-        result.unlockFocus()
-        return result
+        guard let resultCG = ctx.makeImage() else { return nil }
+        return NSImage(cgImage: resultCG, size: NSSize(width: totalW, height: totalH))
     }
 
-    private func gradientAngle() -> CGFloat {
+    private func gradientPoints(for rect: CGRect) -> (CGPoint, CGPoint) {
         let p = selectedPreset
-        if p.startPoint == .topLeading && p.endPoint == .bottomTrailing { return -45 }
-        if p.startPoint == .top && p.endPoint == .bottom { return -90 }
-        if p.startPoint == .leading && p.endPoint == .trailing { return 0 }
-        return -45
+        if p.startPoint == .topLeading && p.endPoint == .bottomTrailing {
+            return (CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.minY))
+        }
+        if p.startPoint == .top && p.endPoint == .bottom {
+            return (CGPoint(x: rect.midX, y: rect.maxY), CGPoint(x: rect.midX, y: rect.minY))
+        }
+        if p.startPoint == .leading && p.endPoint == .trailing {
+            return (CGPoint(x: rect.minX, y: rect.midY), CGPoint(x: rect.maxX, y: rect.midY))
+        }
+        return (CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.minY))
     }
 
     func copyToClipboard() {
@@ -132,9 +161,15 @@ class AppState: ObservableObject {
 struct PreviewCanvas: View {
     @ObservedObject var state: AppState
 
+    private var aspectRatio: CGFloat {
+        guard let img = state.clipboardImage else { return 16.0 / 9.0 }
+        let w = img.size.width + state.padding * 2
+        let h = img.size.height + state.padding * 2
+        return w / h
+    }
+
     var body: some View {
         ZStack {
-            // Gradient background
             LinearGradient(
                 colors: state.selectedPreset.colors,
                 startPoint: state.selectedPreset.startPoint,
@@ -142,17 +177,19 @@ struct PreviewCanvas: View {
             )
 
             if let img = state.clipboardImage {
+                // Scale padding proportionally for preview
+                let scale = min(500.0 / (img.size.width + state.padding * 2), 1.0)
+                let previewPadding = state.padding * scale
+
                 Image(nsImage: img)
                     .resizable()
-                    .aspectRatio(contentMode: .fit)
+                    .aspectRatio(img.size.width / img.size.height, contentMode: .fit)
                     .clipShape(RoundedRectangle(cornerRadius: state.cornerRadius))
                     .shadow(color: state.shadow ? .black.opacity(0.4) : .clear, radius: 16, x: 0, y: 8)
-                    .padding(state.padding / 3) // visual padding scaled for preview
+                    .padding(previewPadding)
             }
         }
-        .aspectRatio(state.clipboardImage.map { $0.size.width + state.padding * 2 } ?? 16 /
-                     (state.clipboardImage.map { $0.size.height + state.padding * 2 } ?? 9),
-                     contentMode: .fit)
+        .aspectRatio(aspectRatio, contentMode: .fit)
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 }
