@@ -2,3 +2,4 @@
 .build/
 SimpleShot.app/
 *.dmg
+.env.local
