@@ -6,7 +6,7 @@ A tiny macOS app that wraps your screenshots in beautiful gradient backgrounds. 
 
 ## Why?
 
-macOS screenshots look raw. Tools like BetterShot add nice backgrounds but come with features you'll never use. SimpleShot does one thing — gradient background with padding — and does it fast.
+macOS screenshots look raw. Tools like CleanShot add nice backgrounds but come with features you'll never use. SimpleShot does one thing — gradient background with padding — and does it fast.
 
 ## How It Works
 
