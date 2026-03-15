@@ -642,31 +642,40 @@ struct ContentView: View {
                 return false
             }
 
-            Divider()
+            // Sidebar separator
+            Rectangle()
+                .fill(Color(nsColor: .separatorColor))
+                .frame(width: 1)
+                .ignoresSafeArea()
 
             // Controls sidebar
             VStack(spacing: 0) {
+            // Open / Paste pinned to top
+            VStack(spacing: 8) {
+                Button(action: { state.openFile() }) {
+                    Label("Open File", systemImage: "folder")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .keyboardShortcut("o")
+                .controlSize(.large)
+
+                Button(action: { state.loadFromClipboard() }) {
+                    Label("Paste from Clipboard", systemImage: "clipboard")
+                        .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut("v")
+                .controlSize(.large)
+            }
+            .padding(.horizontal, 16)
+            .padding(.top, -16)
+            .padding(.bottom, 16)
+
+            Divider()
+
             ScrollView {
                 VStack(alignment: .leading, spacing: 20) {
-                    // Open / Paste
-                    Button(action: { state.openFile() }) {
-                        Label("Open File", systemImage: "folder")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.bordered)
-                    .keyboardShortcut("o")
-                    .controlSize(.large)
-
-                    Button(action: { state.loadFromClipboard() }) {
-                        Label("Paste from Clipboard", systemImage: "clipboard")
-                            .frame(maxWidth: .infinity)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .keyboardShortcut("v")
-                    .controlSize(.large)
-
-                    Divider()
-
                     // Annotation tools
                     VStack(alignment: .leading, spacing: 8) {
                         Text("Annotate")
@@ -786,10 +795,10 @@ struct ContentView: View {
                                 .font(.system(size: 11, design: .monospaced))
                                 .foregroundStyle(.tertiary)
                         }
-                        Slider(value: $state.padding, in: 16...160, step: 8)
+                        Slider(value: $state.padding, in: 0...160, step: 4)
 
                         HStack(spacing: 6) {
-                            ForEach([32, 48, 64, 96, 128], id: \.self) { val in
+                            ForEach([0, 16, 32, 64, 96], id: \.self) { val in
                                 Button("\(val)") {
                                     state.padding = CGFloat(val)
                                 }
@@ -937,6 +946,7 @@ struct ContentView: View {
             .padding(16)
             } // VStack sidebar
             .frame(width: 240)
+            .background(Color(nsColor: .windowBackgroundColor).ignoresSafeArea())
         }
         .frame(minWidth: 700, minHeight: 480)
         .onAppear {
@@ -954,6 +964,7 @@ struct SimpleShotApp: App {
             ContentView()
         }
         .windowResizability(.contentSize)
+        .windowStyle(.hiddenTitleBar)
         .defaultSize(width: 860, height: 560)
     }
 }
