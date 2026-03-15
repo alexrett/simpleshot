@@ -2,6 +2,8 @@
 
 A tiny macOS app that wraps your screenshots in beautiful gradient backgrounds. Take a window screenshot, open SimpleShot, pick a gradient, adjust padding, copy or save.
 
+![SimpleShot](screenshots/result.png)
+
 ## Why?
 
 macOS screenshots look raw. Tools like BetterShot add nice backgrounds but come with features you'll never use. SimpleShot does one thing — gradient background with padding — and does it fast.
