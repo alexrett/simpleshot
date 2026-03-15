@@ -54,14 +54,37 @@ app)
     <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
     <key>CFBundleName</key><string>${DISPLAY_NAME}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.4</string>
+    <key>CFBundleShortVersionString</key><string>1.4.1</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSUIElement</key><${LSUIELEMENT}/>
     <key>LSMinimumSystemVersion</key><string>${MIN_OS}</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSHumanReadableCopyright</key><string>© 2026 Aleksei Malikov. MIT License.</string>
 </dict>
 </plist>
 PLIST
+
+    # Credits shown in About dialog
+    cat > "${APP}/Contents/Resources/Credits.html" << 'CREDITS'
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+body { font-family: -apple-system, sans-serif; font-size: 11px; color: #999; text-align: center; }
+a { color: #4a9eff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+</style>
+</head>
+<body>
+<p>Made by <a href="https://malikov.tech">Aleksei Malikov</a></p>
+<p>
+<a href="https://malikov.tech/simpleshot">Website</a> ·
+<a href="https://github.com/alexrett/simpleshot">GitHub</a>
+</p>
+</body>
+</html>
+CREDITS
+
     echo "✓ ${APP} created"
     ;;
 
