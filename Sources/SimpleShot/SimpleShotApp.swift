@@ -714,7 +714,7 @@ private func clamp(_ v: CGFloat) -> CGFloat {
 // MARK: - Main View
 
 struct ContentView: View {
-    @StateObject private var state = AppState()
+    @ObservedObject var state: AppState
 
     var body: some View {
         HStack(spacing: 0) {
@@ -1110,9 +1110,6 @@ struct ContentView: View {
         .onAppear {
             state.loadFromClipboard()
         }
-        .onDeleteCommand {
-            state.deleteSelectedAnnotation()
-        }
     }
 }
 
@@ -1121,10 +1118,12 @@ struct ContentView: View {
 @main
 struct SimpleShotApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
+    @StateObject private var state = AppState()
 
     var body: some Scene {
         WindowGroup {
-            ContentView()
+            ContentView(state: state)
+                .onAppear { appDelegate.state = state }
         }
         .windowResizability(.contentSize)
         .windowStyle(.hiddenTitleBar)
@@ -1134,6 +1133,8 @@ struct SimpleShotApp: App {
 
 class AppDelegate: NSObject, NSApplicationDelegate {
     var monitor: Any?
+    var keyMonitor: Any?
+    weak var state: AppState?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseUp) { event in
@@ -1141,6 +1142,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                let window = event.window,
                event.locationInWindow.y >= window.frame.height - 32 {
                 window.zoom(nil)
+            }
+            return event
+        }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            // Delete or Backspace
+            if event.keyCode == 51 || event.keyCode == 117 {
+                if let state = self?.state, state.selectedAnnotationID != nil {
+                    state.deleteSelectedAnnotation()
+                    return nil // consume the event
+                }
             }
             return event
         }
