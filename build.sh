@@ -54,7 +54,7 @@ app)
     <key>CFBundleIdentifier</key><string>${BUNDLE_ID}</string>
     <key>CFBundleName</key><string>${DISPLAY_NAME}</string>
     <key>CFBundlePackageType</key><string>APPL</string>
-    <key>CFBundleShortVersionString</key><string>1.4.1</string>
+    <key>CFBundleShortVersionString</key><string>1.4.2</string>
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>LSUIElement</key><${LSUIELEMENT}/>
     <key>LSMinimumSystemVersion</key><string>${MIN_OS}</string>

@@ -276,11 +276,14 @@ class AppState: ObservableObject {
         guard let screenshot = clipboardImage,
               let cgScreenshot = screenshot.cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
 
+        // outputSize is in points; CGImage dimensions are in pixels.
+        // Compute scale factor so everything is rendered at full pixel resolution.
+        let scale = CGFloat(cgScreenshot.width) / screenshot.size.width
         let imgW = CGFloat(cgScreenshot.width)
         let imgH = CGFloat(cgScreenshot.height)
         let size = outputSize
-        let totalW = Int(size.width)
-        let totalH = Int(size.height)
+        let totalW = Int(size.width * scale)
+        let totalH = Int(size.height * scale)
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let ctx = CGContext(
@@ -309,16 +312,17 @@ class AppState: ObservableObject {
             width: imgW,
             height: imgH
         )
+        let scaledCornerRadius = cornerRadius * scale
         if shadow {
             ctx.saveGState()
-            ctx.setShadow(offset: CGSize(width: 0, height: -12), blur: 30, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.45))
+            ctx.setShadow(offset: CGSize(width: 0, height: -12 * scale), blur: 30 * scale, color: CGColor(red: 0, green: 0, blue: 0, alpha: 0.45))
         }
 
         // 3. Draw content background fill (useful for PDFs/transparent images)
         if let bg = contentBackground {
             ctx.saveGState()
-            if cornerRadius > 0 {
-                let clipPath = CGPath(roundedRect: imgRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            if scaledCornerRadius > 0 {
+                let clipPath = CGPath(roundedRect: imgRect, cornerWidth: scaledCornerRadius, cornerHeight: scaledCornerRadius, transform: nil)
                 ctx.addPath(clipPath)
                 ctx.clip()
             }
@@ -328,9 +332,9 @@ class AppState: ObservableObject {
         }
 
         // 4. Draw screenshot with optional corner radius
-        if cornerRadius > 0 {
+        if scaledCornerRadius > 0 {
             ctx.saveGState()
-            let clipPath = CGPath(roundedRect: imgRect, cornerWidth: cornerRadius, cornerHeight: cornerRadius, transform: nil)
+            let clipPath = CGPath(roundedRect: imgRect, cornerWidth: scaledCornerRadius, cornerHeight: scaledCornerRadius, transform: nil)
             ctx.addPath(clipPath)
             ctx.clip()
             ctx.draw(cgScreenshot, in: imgRect)
@@ -344,7 +348,7 @@ class AppState: ObservableObject {
         }
 
         // 4. Draw annotations
-        renderAnnotations(ctx: ctx, totalW: CGFloat(totalW), totalH: CGFloat(totalH))
+        renderAnnotations(ctx: ctx, totalW: CGFloat(totalW), totalH: CGFloat(totalH), scale: scale)
 
         guard let resultCG = ctx.makeImage() else { return nil }
         return NSImage(cgImage: resultCG, size: NSSize(width: totalW, height: totalH))
@@ -352,7 +356,7 @@ class AppState: ObservableObject {
 
     // MARK: - CG Annotation Rendering
 
-    private func renderAnnotations(ctx: CGContext, totalW: CGFloat, totalH: CGFloat) {
+    private func renderAnnotations(ctx: CGContext, totalW: CGFloat, totalH: CGFloat, scale: CGFloat) {
         for ann in annotations {
             // Convert normalized coords to CG coords (flip Y: CG origin is bottom-left)
             let sx = ann.startNorm.x * totalW
@@ -361,14 +365,15 @@ class AppState: ObservableObject {
             let ey = (1 - ann.endNorm.y) * totalH
             let start = CGPoint(x: sx, y: sy)
             let end = CGPoint(x: ex, y: ey)
+            let scaledStroke = ann.strokeWidth * scale
 
             switch ann.tool {
             case .arrow:
-                drawArrowCG(ctx, from: start, to: end, color: ann.color, strokeWidth: ann.strokeWidth)
+                drawArrowCG(ctx, from: start, to: end, color: ann.color, strokeWidth: scaledStroke)
             case .circle:
-                drawEllipseCG(ctx, from: start, to: end, color: ann.color, strokeWidth: ann.strokeWidth)
+                drawEllipseCG(ctx, from: start, to: end, color: ann.color, strokeWidth: scaledStroke)
             case .rectangle:
-                drawRectCG(ctx, from: start, to: end, color: ann.color, strokeWidth: ann.strokeWidth)
+                drawRectCG(ctx, from: start, to: end, color: ann.color, strokeWidth: scaledStroke)
             case .number:
                 drawNumberCG(ctx, center: start, number: ann.number, color: ann.color, totalW: totalW)
             case .text:
