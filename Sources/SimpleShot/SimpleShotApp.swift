@@ -106,6 +106,13 @@ enum AspectRatioOption: String, CaseIterable, Identifiable {
 // MARK: - App State
 
 class AppState: ObservableObject {
+    private static let saveFilenameFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd_HH-mm-ss"
+        return formatter
+    }()
+
     @Published var clipboardImage: NSImage? = nil
     @Published var selectedPreset: GradientPreset = gradientPresets[0]
     @Published var padding: CGFloat = 64
@@ -497,7 +504,7 @@ class AppState: ObservableObject {
 
         let panel = NSSavePanel()
         panel.allowedContentTypes = [UTType.png]
-        panel.nameFieldStringValue = "screenshot.png"
+        panel.nameFieldStringValue = "screenshot-\(Self.saveFilenameFormatter.string(from: Date())).png"
         if panel.runModal() == .OK, let url = panel.url {
             try? pngData.write(to: url)
         }
